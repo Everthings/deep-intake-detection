@@ -20,15 +20,16 @@ import resnet_two_stream
 import oreba_slowfast
 import resnet_slowfast
 
-DATASET_NAME = "OREBA"
-ORIGINAL_SIZE = 140
-FRAME_SIZE = 128
+DATASET_NAME = "Calorie Harmony"
+ORIGINAL_WIDTH = 320
+ORIGINAL_HEIGHT = 256
+FRAME_SIZE = 256
 NUM_CHANNELS = 3
-SEQ_LENGTH = 1
+SEQ_LENGTH = 16
 NUM_SHARDS = 4
 DTYPE_MAP = {"fp16": tf.float16, "fp32": tf.float32}
-CATEGORY_MAP = {"main": 1, "sub": 2, "hand": 3, "utensil": 4}
-NUM_CLASSES_MAP = {"main": 2, "sub": 3, "hand": 3, "utensil": 5}
+CATEGORY_MAP = {"eating": 1}
+NUM_CLASSES_MAP = {"eating": 2}
 
 FLAGS = flags.FLAGS
 flags.DEFINE_float(name='base_learning_rate', default=3e-3,
@@ -40,28 +41,28 @@ flags.DEFINE_enum(name='data_format', default="channels_last",
     help="Set the data format used in the model.")
 flags.DEFINE_enum(name='dtype', default="fp32", enum_values=DTYPE_MAP.keys(),
     help='The TensorFlow datatype used for calculations {fp16, fp32}.')
-flags.DEFINE_string(name='eval_dir', default='eval',
+flags.DEFINE_string(name='eval_dir', default='test',
     help='Directory for eval data.')
 flags.DEFINE_string(name='finetune_only', default='',
     help='What type of layers should be finetuned')
-flags.DEFINE_enum(name='label_category', default="main",
+flags.DEFINE_enum(name='label_category', default="eating",
     enum_values=CATEGORY_MAP.keys(),
     help='Label category for classification task {main, sub, hand, utensil}.')
 flags.DEFINE_enum(name='mode', default="train_and_evaluate",
     enum_values=["train_and_evaluate", "predict_and_export_csv",
         "predict_and_export_tfrecord", "export_saved_model"],
     help='What mode should tensorflow be started in')
-flags.DEFINE_string(name='model', default='oreba_2d_cnn',
+flags.DEFINE_string(name='model', default='resnet_two_stream',
     help='Select the model: {oreba_2d_cnn, oreba_3d_cnn, oreba_cnn_lstm, \
         oreba_two_stream, oreba_slowfast, resnet_2d_cnn, resnet_3d_cnn, \
         resnet_cnn_lstm, resnet_two_stream, resnet_slowfast}')
 flags.DEFINE_string(name='model_dir', default='run',
     help='Output directory for model and training stats.')
-flags.DEFINE_integer(name='num_frames', default=397890,
+flags.DEFINE_integer(name='num_frames', default=400000,
     help='Number of training images.')
-flags.DEFINE_integer(name='num_parallel_calls', default=2,
+flags.DEFINE_integer(name='num_parallel_calls', default=16,
     help='Number of parallel calls in input pipeline.')
-flags.DEFINE_integer(name='num_sequences', default=396960,
+flags.DEFINE_integer(name='num_sequences', default=400000,
     help='Number of training sequences.')
 flags.DEFINE_integer(name='save_checkpoints_steps', default=100,
     help='Save checkpoints every x steps.')
@@ -69,7 +70,7 @@ flags.DEFINE_integer(name='save_summary_steps', default=25,
     help='Save summaries every x steps.')
 flags.DEFINE_integer(name='sequence_shift', default=1,
     help='Shift taken in sequence generation.')
-flags.DEFINE_integer(name='shuffle_buffer', default=50000,
+flags.DEFINE_integer(name='shuffle_buffer', default=2500,
     help='Buffer used for shuffling (~10x for img.')
 flags.DEFINE_float(name='slowfast_alpha', default=4,
     help='Alpha parameter in SlowFast.')
@@ -79,13 +80,13 @@ flags.DEFINE_string(name='train_dir', default='train',
     help='Directory for training data.')
 flags.DEFINE_float(name='train_epochs', default=60,
     help='Number of training epochs.')
-flags.DEFINE_boolean(name='use_distribution', default=False,
+flags.DEFINE_boolean(name='use_distribution', default=True,
     help='Use tf.distribute.MirroredStrategy')
-flags.DEFINE_boolean(name='use_flows', default=False,
+flags.DEFINE_boolean(name='use_flows', default=True,
     help='Use flows as features')
 flags.DEFINE_boolean(name='use_frames', default=True,
     help='Use frames as features')
-flags.DEFINE_boolean(name='use_sequence_input', default=False,
+flags.DEFINE_boolean(name='use_sequence_input', default=True,
     help='Use a frame sequence instead of single frames')
 flags.DEFINE_boolean(name='use_sequence_loss', default=False,
     help='Use sequence-to-sequence loss')
@@ -151,35 +152,27 @@ def _get_input_parser(use_frames, use_flows, label_category):
 
     def input_parser(serialized_example):
         """Map serialized example to image data and label."""
-
+        
         # Parse serialized example
+        feature = {
+            'example/video_id': tf.io.FixedLenFeature([], dtype=tf.string),
+            'example/seq_no': tf.io.FixedLenFeature([], dtype=tf.int64),
+            'example/label': tf.io.FixedLenFeature([], dtype=tf.int64),
+            'example/image': tf.io.FixedLenFeature([], dtype=tf.string),
+        }
         if use_flows:
-            features = tf.io.parse_single_example(
-                serialized_example, {
-                    'example/video_id': tf.io.FixedLenFeature([], dtype=tf.string),
-                    'example/seq_no': tf.io.FixedLenFeature([], dtype=tf.int64),
-                    'example/label_{0}'.format(label_category): tf.io.FixedLenFeature([], dtype=tf.int64),
-                    'example/image': tf.io.FixedLenFeature([], dtype=tf.string),
-                    'example/flow': tf.io.FixedLenFeature([ORIGINAL_SIZE, ORIGINAL_SIZE, 2],
-                        dtype=tf.float32)
-            })
-        else:
-            features = tf.io.parse_single_example(
-                serialized_example, {
-                    'example/video_id': tf.io.FixedLenFeature([], dtype=tf.string),
-                    'example/seq_no': tf.io.FixedLenFeature([], dtype=tf.int64),
-                    'example/label_{0}'.format(label_category): tf.io.FixedLenFeature([], dtype=tf.int64),
-                    'example/image': tf.io.FixedLenFeature([], dtype=tf.string)
-            })
+            feature['example/flow'] = tf.io.FixedLenFeature([ORIGINAL_HEIGHT, ORIGINAL_WIDTH, 2], dtype=tf.float32)
+            
+        features = tf.io.parse_single_example(serialized_example, feature)
 
         # Video id
-        id = features['example/video_id']
+        video_id = features['example/video_id']
 
         # Sequence no
         seq_no = tf.cast(features['example/seq_no'], tf.int32)
 
         # Convert label to one-hot encoding
-        label = tf.cast(features['example/label_{0}'.format(label_category)], tf.int32)
+        label = tf.cast(features['example/label'], tf.int32)
 
         if use_frames:
             # Convert data from scalar string tensor to uint8 tensor
@@ -187,7 +180,7 @@ def _get_input_parser(use_frames, use_flows, label_category):
             image_data = tf.cast(image_data, tf.float32)
             # Reshape from [height * width * depth] to [height, width, depth].
             image_data = tf.reshape(image_data,
-                [ORIGINAL_SIZE, ORIGINAL_SIZE, NUM_CHANNELS])
+                [ORIGINAL_HEIGHT, ORIGINAL_WIDTH, NUM_CHANNELS])
         else:
             image_data = []
 
@@ -197,7 +190,7 @@ def _get_input_parser(use_frames, use_flows, label_category):
         else:
             flow_data = []
 
-        return id, seq_no, image_data, flow_data, label
+        return video_id, seq_no, image_data, flow_data, label
 
     return input_parser
 
@@ -231,9 +224,10 @@ def _get_transformation_parser(use_sequence_input, is_training, use_frames, use_
                 flow_data = tf.contrib.image.rotate(flow_data,
                     angles=rotation_radian)
 
-            # Random crop
-            diff = ORIGINAL_SIZE - FRAME_SIZE + 1
-            limit = [1, diff, diff, 1] if use_sequence_input else [diff, diff, 1]
+           # Random crop
+            diff_width = ORIGINAL_WIDTH - FRAME_SIZE + 1
+            diff_height = ORIGINAL_HEIGHT - FRAME_SIZE + 1
+            limit = [1, diff_height, diff_width, 1] if use_sequence_input else [diff_height, diff_width, 1]
             offset = tf.random.uniform(shape=tf.shape(limit),
                 dtype=tf.int32, maxval=tf.int32.max) % limit
             if use_frames:
@@ -277,9 +271,8 @@ def _get_transformation_parser(use_sequence_input, is_training, use_frames, use_
             contrast_factor = tf.random.uniform([], 0.2, 1.8)
             if use_frames:
                 image_data = _adjust_contrast(image_data, contrast_factor)
-
+    
         else:
-
             # Crop the central [height, width].
             if use_frames:
                 image_data = tf.image.resize_with_crop_or_pad(
@@ -328,7 +321,7 @@ def _get_dtype_cast_parser(use_frames, use_flows, dtype):
 
         if use_flows:
             flow_data = tf.cast(flow_data, dtype=dtype)
-
+    
         return image_data, flow_data, label_data
 
     return dtype_cast_parser

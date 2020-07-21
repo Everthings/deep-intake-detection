@@ -110,10 +110,10 @@ def main(flags, model_fn, input_fn, parse_fn, serving_input_receiver_fn, warmsta
         hooks=[profiler_hook])
     eval_spec = tf.estimator.EvalSpec(
         input_fn=eval_input_fn,
-        steps=None, # Use evaluation feeder until it is empty
+        steps=10, # Use evaluation feeder until it is empty
         exporters=best_exporter,
-        start_delay_secs=120,
-        throttle_secs=60)
+        start_delay_secs=10,
+        throttle_secs=10)
 
     if flags.mode == "train_and_evaluate":
         # Start training and evaluation
@@ -179,7 +179,7 @@ def model_fn(features, labels, mode, params, model):
 
     # If necessary, slice last sequence step for labels
     final_labels = labels[:,-1] if labels.get_shape().ndims == 2 else labels
-
+    
     def _compute_balanced_sample_weight(labels):
         """Calculate the balanced sample weight for imbalanced data."""
         f_labels = tf.reshape(labels,[-1]) if labels.get_shape().ndims == 2 else labels
@@ -189,6 +189,9 @@ def model_fn(features, labels, mode, params, model):
         calc_weight = lambda x: tf.divide(tf.divide(total_count, x),
             tf.cast(label_count, tf.float64))
         class_weights = tf.map_fn(fn=calc_weight, elems=count, dtype=tf.float64)
+        
+        tf.print(class_weights)
+        
         sample_weights = tf.gather(class_weights, idx)
         sample_weights = tf.reshape(sample_weights, tf.shape(labels))
         return tf.cast(sample_weights, tf.float32)
@@ -407,6 +410,8 @@ def predict_and_export_csv(estimator, eval_input_fn, parse_fn, eval_dir, seq_ski
     logging.info("Working on {0}.".format(eval_dir))
     logging.info("Starting prediction...")
     predictions = estimator.predict(input_fn=eval_input_fn)
+    print('----------------------------------------------------------------------------------------')
+    print(predictions)
     pred_list = list(itertools.islice(predictions, None))
     pred_probs_1 = list(map(lambda item: item["probabilities"][1], pred_list))
     num = len(pred_probs_1)

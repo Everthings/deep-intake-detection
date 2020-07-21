@@ -1,0 +1,12 @@
+/env
+/probs
+/run
+/test
+/test_fake
+/test
+/test2
+/train
+/train_fake
+/train2
+.ipynb_checkpoints/
+__pycache__/
